@@ -1,0 +1,82 @@
+name: node-hello-world-cicd
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy to OKE
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '16'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Get or create OCIR Repository
+      uses: oracle-actions/get-ocir-repository@v1.2.1
+      id: get-ocir-repository
+      with:
+        name: "node-hello-world"
+        compartment: ${{ secrets.OCI_COMPARTMENT_OCID }}
+
+    - name: Log into OCIR
+      uses: oracle-actions/login-ocir@v1.2.1
+      id: login-ocir
+      with:
+        auth_token: ${{ secrets.OCI_AUTH_TOKEN }}
+
+    - name: Build Docker image
+      run: |
+        docker build -t fra.ocir.io/frur454twuum/node-hello-world:latest .
+        docker build -t fra.ocir.io/frur454twuum/node-hello-world:${{ github.sha }} .
+
+    - name: Push Docker image
+      run: |
+        docker push fra.ocir.io/frur454twuum/node-hello-world:latest
+        docker push fra.ocir.io/frur454twuum/node-hello-world:${{ github.sha }}
+
+    - name: Configure kubectl for OKE
+      uses: oracle-actions/configure-kubectl-oke@v1.3.2
+      id: kubectl-oke-action
+      with:
+        cluster: ${{ secrets.OKE_CLUSTER_OCID }}
+
+    - name: Create OCIR Secret
+      run: |
+        kubectl create secret docker-registry ocir-secret \
+          --docker-server=fra.ocir.io \
+          --docker-username='frur454twuum/${{ secrets.OCI_CLI_USER }}' \
+          --docker-password='${{ secrets.OCI_AUTH_TOKEN }}' \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy to OKE
+      run: |
+        kubectl apply -f k8s-deployment.yaml
+
+    - name: Wait for deployment
+      run: |
+        kubectl rollout status deployment/node-hello-world --timeout=300s
+
+    - name: Get service info
+      run: |
+        kubectl get services node-hello-world-service
+        kubectl get pods -l app=node-hello-world
